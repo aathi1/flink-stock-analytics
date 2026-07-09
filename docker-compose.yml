@@ -1,0 +1,79 @@
+version: "3.9"
+services:
+  kafka:
+    image: apache/kafka:3.9.0
+    container_name: kafka
+    hostname: kafka
+    ports:
+      - "9092:9092"
+      - "9094:9094"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093,EXTERNAL://:9094
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,EXTERNAL://localhost:9094
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+
+  jobmanager:
+    build:
+      context: .
+      dockerfile: docker/flink.Dockerfile
+    container_name: jobmanager
+    hostname: jobmanager
+    ports:
+      - "8081:8081"
+    command: jobmanager
+    environment:
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: jobmanager
+    depends_on:
+      - kafka
+    volumes:
+      - ./:/opt/flink/project
+      - ./flink-jars/flink-sql-connector-kafka-3.3.0-1.20.jar:/opt/flink/lib/flink-sql-connector-kafka.jar
+      - ./flink-jars/flink-json-1.20.1.jar:/opt/flink/lib/flink-json.jar
+      - ./flink-jars/flink-connector-jdbc-3.2.0-1.19.jar:/opt/flink/lib/flink-connector-jdbc.jar
+      - ./flink-jars/postgresql-42.7.3.jar:/opt/flink/lib/postgresql-jdbc.jar
+
+  taskmanager:
+    build:
+      context: .
+      dockerfile: docker/flink.Dockerfile
+    container_name: taskmanager
+    hostname: taskmanager
+    command: taskmanager
+    depends_on:
+      - jobmanager
+    environment:
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: jobmanager
+        taskmanager.numberOfTaskSlots: 4
+    volumes:
+      - ./:/opt/flink/project
+      - ./flink-jars/flink-sql-connector-kafka-3.3.0-1.20.jar:/opt/flink/lib/flink-sql-connector-kafka.jar
+      - ./flink-jars/flink-json-1.20.1.jar:/opt/flink/lib/flink-json.jar
+      - ./flink-jars/flink-connector-jdbc-3.2.0-1.19.jar:/opt/flink/lib/flink-connector-jdbc.jar
+      - ./flink-jars/postgresql-42.7.3.jar:/opt/flink/lib/postgresql-jdbc.jar
+
+  postgres:
+    image: postgres:16
+    container_name: postgres
+    hostname: postgres
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: stockdb
+      POSTGRES_USER: stockuser
+      POSTGRES_PASSWORD: stockpass
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+
+volumes:
+  kafka-data:
+  postgres-data:

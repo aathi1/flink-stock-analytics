@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Real-Time Stock Analytics Dashboard</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
+<style>
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: #0f1117;
+    color: #e6e6e6;
+    margin: 0;
+    padding: 24px;
+  }
+  h1 {
+    font-size: 20px;
+    margin-bottom: 4px;
+  }
+  .subtitle {
+    color: #888;
+    font-size: 13px;
+    margin-bottom: 24px;
+  }
+  .controls {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    margin-bottom: 20px;
+    flex-wrap: wrap;
+  }
+  input, button {
+    background: #1a1d27;
+    border: 1px solid #333;
+    color: #e6e6e6;
+    padding: 8px 12px;
+    border-radius: 6px;
+    font-size: 14px;
+  }
+  button {
+    cursor: pointer;
+    background: #2563eb;
+    border: none;
+  }
+  button:hover { background: #1d4ed8; }
+  .status {
+    font-size: 12px;
+    color: #4ade80;
+  }
+  .status.error { color: #f87171; }
+  .grid {
+    display: grid;
+    grid-template-columns: 2fr 1fr;
+    gap: 20px;
+  }
+  @media (max-width: 800px) {
+    .grid { grid-template-columns: 1fr; }
+  }
+  .card {
+    background: #1a1d27;
+    border: 1px solid #2a2d3a;
+    border-radius: 10px;
+    padding: 16px;
+  }
+  .card h2 {
+    font-size: 14px;
+    color: #aaa;
+    margin: 0 0 12px 0;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+  }
+  th, td {
+    text-align: left;
+    padding: 6px 8px;
+    border-bottom: 1px solid #2a2d3a;
+  }
+  th { color: #888; font-weight: 500; }
+  .stats {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 12px;
+    margin-bottom: 16px;
+  }
+  .stat-box {
+    background: #22252f;
+    border-radius: 8px;
+    padding: 12px;
+    text-align: center;
+  }
+  .stat-box .label { font-size: 11px; color: #888; }
+  .stat-box .value { font-size: 20px; font-weight: 600; margin-top: 4px; }
+  canvas { max-height: 380px; }
+</style>
+</head>
+<body>
+
+<h1>Real-Time Stock Analytics</h1>
+<div class="subtitle">Kafka to Flink (windowed aggregation) to PostgreSQL to FastAPI</div>
+
+<div class="controls">
+  <input id="symbolInput" value="RELIANCE" placeholder="Symbol (e.g. RELIANCE)">
+  <input id="apiInput" value="http://localhost:8000" placeholder="API base URL" style="width: 220px;">
+  <button onclick="fetchData()">Refresh Now</button>
+  <span id="status" class="status">Connecting...</span>
+</div>
+
+<div class="stats">
+  <div class="stat-box">
+    <div class="label">Latest Avg Price</div>
+    <div class="value" id="latestAvg">-</div>
+  </div>
+  <div class="stat-box">
+    <div class="label">Latest Window Range</div>
+    <div class="value" id="latestRange">-</div>
+  </div>
+  <div class="stat-box">
+    <div class="label">Latest Tick Count</div>
+    <div class="value" id="latestTicks">-</div>
+  </div>
+</div>
+
+<div class="grid">
+  <div class="card">
+    <h2>Average Price Over Time (windowed)</h2>
+    <canvas id="priceChart"></canvas>
+  </div>
+  <div class="card">
+    <h2>Recent Windows</h2>
+    <table>
+      <thead>
+        <tr><th>Window Start</th><th>Avg</th><th>Ticks</th></tr>
+      </thead>
+      <tbody id="tableBody"></tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+let chart;
+
+function initChart() {
+  const ctx = document.getElementById('priceChart').getContext('2d');
+  chart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: [],
+      datasets: [
+        {
+          label: 'Avg Price',
+          data: [],
+          borderColor: '#3b82f6',
+          backgroundColor: 'rgba(59,130,246,0.08)',
+          tension: 0.25,
+          fill: true,
+          pointRadius: 2
+        },
+        {
+          label: 'Max Price',
+          data: [],
+          borderColor: '#22c55e',
+          borderDash: [4, 4],
+          pointRadius: 0,
+          fill: false
+        },
+        {
+          label: 'Min Price',
+          data: [],
+          borderColor: '#ef4444',
+          borderDash: [4, 4],
+          pointRadius: 0,
+          fill: false
+        }
+      ]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: true,
+      scales: {
+        x: { ticks: { color: '#888', maxRotation: 45 }, grid: { color: '#22252f' } },
+        y: { ticks: { color: '#888' }, grid: { color: '#22252f' } }
+      },
+      plugins: {
+        legend: { labels: { color: '#ccc' } }
+      }
+    }
+  });
+}
+
+async function fetchData() {
+  const symbol = document.getElementById('symbolInput').value.trim();
+  const apiBase = document.getElementById('apiInput').value.trim();
+  const statusEl = document.getElementById('status');
+
+  if (!symbol) return;
+
+  try {
+    const res = await fetch(`${apiBase}/metrics/${symbol}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+
+    if (!Array.isArray(data) || data.length === 0) {
+      statusEl.textContent = 'Connected - no data yet';
+      statusEl.className = 'status';
+      return;
+    }
+
+    // API returns newest-first; reverse for chronological chart display
+    const chronological = [...data].reverse();
+
+    const labels = chronological.map(r => {
+      const d = new Date(r.window_start);
+      return d.toLocaleTimeString();
+    });
+
+    chart.data.labels = labels;
+    chart.data.datasets[0].data = chronological.map(r => r.avg_price);
+    chart.data.datasets[1].data = chronological.map(r => r.max_price);
+    chart.data.datasets[2].data = chronological.map(r => r.min_price);
+    chart.update();
+
+    // Stat boxes (latest = data[0], since API is newest-first)
+    const latest = data[0];
+    document.getElementById('latestAvg').textContent = latest.avg_price.toFixed(2);
+    document.getElementById('latestRange').textContent =
+      `${latest.min_price.toFixed(2)} - ${latest.max_price.toFixed(2)}`;
+    document.getElementById('latestTicks').textContent = latest.tick_count;
+
+    // Table
+    const tbody = document.getElementById('tableBody');
+    tbody.innerHTML = data.slice(0, 10).map(r => `
+      <tr>
+        <td>${new Date(r.window_start).toLocaleTimeString()}</td>
+        <td>${r.avg_price.toFixed(2)}</td>
+        <td>${r.tick_count}</td>
+      </tr>
+    `).join('');
+
+    statusEl.textContent = `Live - updated ${new Date().toLocaleTimeString()}`;
+    statusEl.className = 'status';
+
+  } catch (err) {
+    statusEl.textContent = `Error: ${err.message}`;
+    statusEl.className = 'status error';
+  }
+}
+
+initChart();
+fetchData();
+setInterval(fetchData, 3000);
+</script>
+
+</body>
+</html>
